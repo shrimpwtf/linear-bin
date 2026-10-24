@@ -1,0 +1,63 @@
+name: update
+
+on:
+  schedule:
+    - cron: '17 */3 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - PKGBUILD
+      - linear-desktop
+      - linear.desktop
+      - linear-chrome.*.js
+      - scripts/**
+      - .github/workflows/update.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install tooling
+        run: pacman -Syu --noconfirm git openssh sudo 7zip icoutils asar curl openssl pacman-contrib
+
+      - uses: actions/checkout@v4
+
+      - name: Mark workspace safe
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Bump to the latest Linear release
+        run: scripts/update.sh
+
+      - name: Test build
+        run: |
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          chown -R builder "$GITHUB_WORKSPACE"
+          su builder -c "cd '$GITHUB_WORKSPACE' && makepkg -sf --noconfirm"
+
+      - name: Commit version bump
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+          else
+            version=$(sed -n 's/^pkgver=//p' PKGBUILD)
+            git commit -m "Update to ${version}"
+            git push
+          fi
+
+      - name: Publish to the AUR
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: scripts/publish-aur.sh
